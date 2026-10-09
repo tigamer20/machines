@@ -1,0 +1,13 @@
+// Prints the odds and return-to-player of every default machine.
+import { DEFAULT_MACHINES } from '../src/defaults.js';
+import { analyze } from '../shared/paytable.js';
+
+for (const m of DEFAULT_MACHINES) {
+  const a = analyze(m);
+  const total = (a.rtp + m.jackpotContribution / 100) * 100;
+  console.log(
+    `${m.name.padEnd(16)} base RTP ${(a.rtp * 100).toFixed(1).padStart(5)}%  ` +
+      `+jackpot ${m.jackpotContribution}% = ${total.toFixed(1)}%  ` +
+      `hit 1 in ${(1 / a.hitRate).toFixed(1).padStart(4)}  jackpot 1 in ${a.jackpotOdds.toLocaleString()}`
+  );
+}

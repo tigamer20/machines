@@ -1,0 +1,14 @@
+{
+  "name": "lucky-machines",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Play-money slot machine website with a hidden admin panel, backed by Turso.",
+  "type": "module",
+  "main": "server.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file-if-exists=.env server.js",
+    "check": "node scripts/odds.js"
+  }
+}
