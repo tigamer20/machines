@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto';
-import { evaluateLine, analyze, totalWeight } from '../shared/paytable.js';
-import { DEFAULT_MACHINES } from './defaults.js';
+import { evaluateSpin, analyze, totalWeight } from '../shared/paytable.js';
+import { DEFAULT_MACHINES, MACHINE_CONFIG_VERSION } from './defaults.js';
 import { HttpError } from './validate.js';
 
 const PLAYER_COLS = `id, code, name, balance, active, spins, wagered, won, biggest_win, jackpots,
@@ -23,22 +23,23 @@ function pickSymbol(symbols, total) {
   return symbols[symbols.length - 1].s;
 }
 
-// Each reel shows three cells; only the middle row is the payline.
+// Each reel shows three cells (top, middle, bottom); see shared/paytable.js
+// for the ways to win.
 export function resolveSpin(cfg, bet, jackpot) {
   const total = totalWeight(cfg);
   const grid = Array.from({ length: cfg.reels }, () => [0, 1, 2].map(() => pickSymbol(cfg.symbols, total)));
-  const line = grid.map((col) => col[1]);
-  const result = evaluateLine(line, cfg);
+  const result = evaluateSpin(grid, cfg, bet);
 
   let pot = jackpot + Math.floor((bet * cfg.jackpotContribution) / 100);
-  let win = Math.floor(bet * result.mult);
+  let win = result.total;
   let jackpotWin = 0;
   if (result.jackpot) {
     jackpotWin = pot;
     win += pot;
     pot = cfg.jackpotSeed;
+    result.wins.find((w) => w.type === 'jackpot').amount = jackpotWin;
   }
-  return { grid, line, win, jackpotWin, jackpot: pot, count: result.count, mult: result.mult };
+  return { grid, wins: result.wins, win, jackpotWin, jackpot: pot };
 }
 
 export class Store {
@@ -47,6 +48,16 @@ export class Store {
     this.settings = {};
     this.machines = new Map(); // id -> { config, jackpot, sort }
     this.queue = Promise.resolve();
+    this.listeners = new Set();
+  }
+
+  // Live updates (balance changes) for connected players.
+  onPlayerChange(fn) {
+    this.listeners.add(fn);
+  }
+
+  notify(playerId, data) {
+    for (const fn of this.listeners) fn(playerId, data);
   }
 
   async load() {
@@ -54,6 +65,17 @@ export class Store {
     this.settings = Object.fromEntries(s.rows.map((r) => [r.key, JSON.parse(r.value)]));
     const m = await this.db.execute('SELECT id, sort, config, jackpot FROM machines ORDER BY sort');
     this.machines = new Map(m.rows.map((r) => [r.id, { config: JSON.parse(r.config), jackpot: r.jackpot, sort: r.sort }]));
+
+    // Configs saved by an older version lack lines, wilds and scatters:
+    // replace them with the current defaults, keeping the jackpot amount.
+    for (const [id, m] of this.machines) {
+      if (m.config.version === MACHINE_CONFIG_VERSION) continue;
+      const def = DEFAULT_MACHINES.find((d) => d.id === id);
+      if (!def) continue;
+      m.config = structuredClone(def);
+      await this.db.execute('UPDATE machines SET config = ? WHERE id = ?', [JSON.stringify(m.config), id]);
+      console.log(`[store] upgraded machine "${id}" to config version ${MACHINE_CONFIG_VERSION}`);
+    }
   }
 
   // Serializes every operation that moves money. The app runs as a single
@@ -72,8 +94,18 @@ export class Store {
   // ---------- public data ----------
 
   publicConfig() {
-    const { siteName, currencySymbol, allowSignup, slotsOpen, closedMessage, announcement, showLeaderboard, spinDuration, maxAutoSpins } =
-      this.settings;
+    const {
+      siteName,
+      currencySymbol,
+      allowSignup,
+      slotsOpen,
+      closedMessage,
+      announcement,
+      showLeaderboard,
+      blackjackTable,
+      spinDuration,
+      maxAutoSpins,
+    } = this.settings;
     const machines = [...this.machines.values()]
       .filter((m) => m.config.enabled)
       .map(({ config: c, jackpot }) => ({
@@ -81,14 +113,28 @@ export class Store {
         name: c.name,
         tagline: c.tagline,
         reels: c.reels,
+        lines: c.lines || 1,
         theme: c.theme,
         bets: c.bets,
         jackpotSymbol: c.jackpotSymbol,
+        wildSymbol: c.wildSymbol || '',
+        scatterSymbol: c.scatterSymbol || '',
         symbols: c.symbols.map(({ s, name, weight, pays }) => ({ s, name, weight, pays })),
         jackpot,
       }));
     return {
-      settings: { siteName, currencySymbol, allowSignup, slotsOpen, closedMessage, announcement, showLeaderboard, spinDuration, maxAutoSpins },
+      settings: {
+        siteName,
+        currencySymbol,
+        allowSignup,
+        slotsOpen,
+        closedMessage,
+        announcement,
+        showLeaderboard,
+        blackjackTable,
+        spinDuration,
+        maxAutoSpins,
+      },
       machines,
     };
   }
@@ -265,15 +311,8 @@ export class Store {
       await this.db.batch(stmts);
       machine.jackpot = r.jackpot;
 
-      return {
-        grid: r.grid,
-        win: r.win,
-        jackpotWin: r.jackpotWin,
-        count: r.count,
-        mult: r.mult,
-        balance,
-        jackpot: r.jackpot,
-      };
+      this.notify(player.id, { balance });
+      return { grid: r.grid, wins: r.wins, win: r.win, jackpotWin: r.jackpotWin, balance, jackpot: r.jackpot };
     });
   }
 
@@ -293,6 +332,7 @@ export class Store {
           args: [player.id, type, amount, balance, note || null],
         },
       ]);
+      this.notify(player.id, { balance, change: { id: tx.lastInsertRowid, type, amount, note: note || null } });
       return { player: { ...player, balance }, transactionId: tx.lastInsertRowid };
     });
   }
@@ -319,6 +359,7 @@ export class Store {
           args: [player.id, -tx.amount, balance, `Undo of ${tx.type} entry #${tx.id}`],
         },
       ]);
+      this.notify(player.id, { balance, change: { id: tx.id, type: 'void', amount: -tx.amount, note: `Undo of ${tx.type} entry` } });
       return { balance };
     });
   }

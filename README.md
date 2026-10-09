@@ -2,13 +2,14 @@
 
 A play-money slot machine website for parties, events and game nights.
 
-- **5 slot machines**, each with its own progressive jackpot that can actually be won.
+- **5 slot machines**, each with its own progressive jackpot that can actually be won, and several ways to win: up to 9 **pay lines**, **wild** symbols and **scatter** symbols that pay anywhere.
+- **Live blackjack table screen**: a player sitting at the real table taps **🃏 Blackjack** and gets a full-screen view of their balance. When the dealer records a hand in the admin panel, it updates instantly with a win/loss animation. **Leave table** is always one tap away.
 - **Players sign in with a 5-digit code.** The code keeps their balance and stats: spins, total bet, total won, biggest win, jackpots, per-machine results and blackjack results.
 - **Hidden admin panel** protected by a username and password. From it you can:
   - create players and hand out codes, edit balances, rename, disable, reset codes or delete players
-  - **record the physical blackjack table**: pick a player, choose Won / Lost / Push, enter the amount, and their balance updates instantly (with Undo)
-  - edit every machine: name, colors, bet sizes, symbols, symbol weights, payouts, jackpot symbol, current jackpot, jackpot reset value and the % of each bet that feeds it. Live odds (return to player, hit rate, jackpot odds) update as you type.
-  - edit global settings: site name, currency symbol, starting balance, self sign-up, leaderboard, announcement banner, open/close all machines, spin speed, auto-spin
+  - **record the physical blackjack table**: players with the table screen open appear at the top as "Seated at the table now". Pick one, choose Won / Lost / Push, enter the amount, and their balance updates instantly on their phone (with Undo).
+  - edit every machine: name, colors, bet sizes, number of pay lines, wild and scatter symbols, symbols, symbol weights, payouts, jackpot symbol, current jackpot, jackpot reset value and the % of each bet that feeds it. Live odds (return to player, hit rate, jackpot odds) update as you type.
+  - edit global settings: site name, currency symbol, starting balance, self sign-up, leaderboard, blackjack table screen, announcement banner, open/close all machines, spin speed, auto-spin
   - see a live dashboard and a full activity log
 - **Mobile-first UI.** Works on phones, tablets and desktops.
 
@@ -143,7 +144,11 @@ You can use either the Blueprint (fastest) or manual setup.
 2. **Settings:** set the site name, currency symbol and the starting balance for new players.
 3. **Players → New player:** enter a name. The app shows a **5-digit code**. Give it to the player.
 4. The player opens the site on their phone, types the code and plays.
-5. **Blackjack:** at the physical table, open **Blackjack** in the admin panel (works well on a phone). For each hand: tap the player → **Won**, **Lost** or **Push** → amount (quick buttons +5, +10, +25…) → **Record**. If you make a mistake, press **Undo** next to the entry.
+5. **Blackjack:**
+   - Each player at the real table opens the site on their phone and taps **🃏 Blackjack** (in the menu or on the home screen). Their phone shows their balance in big numbers and stays awake. They can tap **Leave table** at any time.
+   - The dealer opens **Blackjack** in the admin panel (works well on a phone). Seated players are listed at the top with a green dot. For each hand: tap the player → **Won**, **Lost** or **Push** → amount (quick buttons +5, +10, +25…) → **Record**.
+   - The player's screen updates instantly (green flash for a win, red for a loss) and keeps a running total for the session. If you make a mistake, press **Undo** next to the entry; the player's screen shows the correction.
+   - You can turn the table screen off in **Settings → Blackjack table**.
 6. **Machines:** adjust anything you like. The **Odds** panel shows you the effect before you save.
 
 Tip: bookmark the admin URL. It is never linked from the player site and is marked `noindex`. The real protection is still your username and password: login attempts are rate-limited and sessions expire after 12 hours.
@@ -152,21 +157,30 @@ Tip: bookmark the admin URL. It is never linked from the player site and is mark
 
 ## 4. How the games work
 
-- Each machine has 3, 4 or 5 reels. Every reel uses the same **weighted** list of symbols: a symbol with weight 10 lands twice as often as one with weight 5.
-- Only the **middle line** pays. Wins count **identical symbols in a row starting from the left reel**. The paytable entry for that symbol and that count multiplies the bet. Example: on *Lucky Sevens*, `7️⃣ 7️⃣ 🍋` pays the "×2" value of 7️⃣ (10× the bet).
-- **Jackpot:** when every reel shows the machine's jackpot symbol, the player wins the whole jackpot. It then resets to the "reset value". A percentage of every bet on that machine is added to the jackpot, so it grows while people play (players see it climb live).
-- All randomness happens on the server with a cryptographically secure generator. The browser only animates the result, so players cannot cheat.
-- The defaults pay back about **91–95%** of bets on average. Approximate jackpot odds:
+Each spin shows 3 rows on every reel. Every reel uses the same **weighted** list of symbols: a symbol with weight 10 lands twice as often as one with weight 5. There are four ways to win, and all of them add up on the same spin:
 
-  | Machine | Reels | Bets | Jackpot starts at | Jackpot odds |
-  | --- | --- | --- | --- | --- |
-  | Lucky Sevens | 3 | $1–$25 | $1,000 | 1 in 10,648 |
-  | Fruit Fiesta | 3 | $0.50–$10 | $500 | 1 in 9,261 |
-  | Neon Nights | 5 | $1–$20 | $2,500 | 1 in 32,768 |
-  | Pharaoh's Gold | 5 | $2–$50 | $5,000 | 1 in 38,218 |
-  | Galaxy Jackpot | 3 | $5–$100 | $10,000 | 1 in 8,000 |
+1. **Pay lines.** Each machine has up to 5 lines (3 reels) or 9 lines (5 reels): the 3 rows, diagonals, V shapes and zigzags. The bet is split evenly across the active lines. A line pays when it starts with identical symbols from the left reel, and the payout multiplies the line bet. Example: on *Lucky Sevens* with a $5 bet on 5 lines ($1 per line), `7️⃣ 7️⃣ 7️⃣` on any line pays 50 × $1 = $50.
+2. **Wild.** The wild symbol replaces any regular symbol to complete a line (`🃏 7️⃣ 7️⃣` counts as three sevens). A line made only of wilds has its own, bigger payout. Wilds never replace the jackpot or scatter symbol.
+3. **Scatter.** The scatter pays anywhere on the screen, no line needed: count the reels that show it. Its payout multiplies the whole bet.
+4. **Jackpot.** Fill any active line with the machine's jackpot symbol to win the whole jackpot, which then resets to its "reset value". A percentage of every bet on that machine is added to the jackpot, so it grows while people play (players see it climb live).
 
-  Want jackpots more often during a short event? In **Machines**, raise the weight of the jackpot symbol (for example from 2 to 4) and watch the **Jackpot** odds in the side panel. **Reset to default** restores the original paytable at any time.
+Winning lines are drawn over the reels, and the **ℹ️** button on each machine lists every way to win, with the real amounts for the selected bet.
+
+All randomness happens on the server with a cryptographically secure generator. The browser only animates the result, so players cannot cheat.
+
+The defaults pay back about **91–92%** of bets on average (93–96% counting what feeds the jackpot). (verified with 200,000 simulated spins per machine):
+
+| Machine | Reels / lines | Wild · Scatter | Bets | Jackpot starts at | Jackpot odds |
+| --- | --- | --- | --- | --- | --- |
+| Lucky Sevens | 3 / 5 | 🃏 · 🔥 | $1–$25 | $1,000 | 1 in ~10,000 |
+| Fruit Fiesta | 3 / 5 | 🌈 · 🧺 | $0.50–$10 | $500 | 1 in ~14,000 |
+| Neon Nights | 5 / 9 | 🌀 · 🎤 | $1–$20 | $2,500 | 1 in ~21,000 |
+| Pharaoh's Gold | 5 / 9 | 🌞 · 📜 | $2–$50 | $5,000 | 1 in ~21,000 |
+| Galaxy Jackpot | 3 / 5 | 🕳️ · 🛸 | $5–$100 | $10,000 | 1 in ~9,000 |
+
+Want jackpots more often during a short event? In **Machines**, raise the weight of the jackpot symbol (for example from 1 to 2) and watch the **Jackpot** odds in the side panel. **Reset to default** restores the original paytable at any time.
+
+> Upgrading from the first version: on startup, machines saved by the old single-line version are replaced by these new defaults automatically. Current jackpot amounts are kept.
 
 Run `npm run check` to print the odds of the default machines.
 
@@ -216,6 +230,7 @@ If `TURSO_DATABASE_URL` is empty, the app stores everything in `data/local.db` u
 | Admin page shows `Not found` | You are not using the exact `ADMIN_PATH`. It needs the trailing part exactly as set, e.g. `/backstage-7f3k9/`. |
 | "Too many attempts" | Login is rate-limited per device (15 tries per 5 min for players, 8 per 15 min for admin). Wait and retry. |
 | The site takes ~1 minute to open | Normal on the free plan after 15 minutes idle (see above). |
+| The table screen says "Reconnecting…" | The phone lost its connection or the server restarted. It reconnects by itself within a few seconds. |
 | A player forgot their code | Admin → Players → search their name. The code is shown in the list. |
 | A code was leaked | Admin → Players → open the player → **New code**. The old code stops working immediately. |
 
@@ -231,7 +246,8 @@ src/store.js         Spins, jackpots, players, blackjack, settings (all money mo
 src/defaults.js      Default settings and the 5 default machines
 src/validate.js      Input validation for admin edits
 src/auth.js          Signed cookies, admin credentials, rate limiting
-shared/paytable.js   Win evaluation and exact odds (used by server and browser)
+src/live.js          Live balance stream (Server-Sent Events) for the blackjack table screen
+shared/paytable.js   Pay lines, wilds, scatters, jackpot and exact odds (used by server and browser)
 public/              Player site (index.html, app.js, app.css, ui.js)
 admin/               Admin panel (only served under ADMIN_PATH)
 render.yaml          Render Blueprint

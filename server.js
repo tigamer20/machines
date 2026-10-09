@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { openDb } from './src/db.js';
 import { migrate } from './src/schema.js';
 import { Store } from './src/store.js';
+import * as live from './src/live.js';
 import { HttpError, money, playerName, validateMachine, validateSettings } from './src/validate.js';
 import {
   adminConfigured,
@@ -137,6 +138,10 @@ const db = await openDb();
 await migrate(db);
 const store = new Store(db);
 await store.load();
+store.onPlayerChange(live.publish);
+
+// Returned by handlers that wrote the response themselves (event streams).
+const STREAMED = Symbol('streamed');
 
 let lobbyCache = { at: 0, data: null };
 async function lobbyFeed() {
@@ -229,6 +234,15 @@ route('POST', '/api/spin', async ({ req, body }) => {
   return store.spin(p.id, String(body.machineId || ''), Math.round(Number(body.bet)));
 });
 
+// Live balance stream. ?table=1 marks the player as seated at the blackjack table.
+route('GET', '/api/live', async ({ req, res, url }) => {
+  const p = await requirePlayer(req);
+  const table = url.searchParams.get('table') === '1';
+  if (table && !store.settings.blackjackTable) throw new HttpError(403, 'The blackjack table is closed');
+  live.connect(req, res, p, { table });
+  return STREAMED;
+});
+
 route('GET', '/api/leaderboard', async ({ req }) => {
   await requirePlayer(req);
   if (!store.settings.showLeaderboard) throw new HttpError(404, 'The leaderboard is hidden');
@@ -274,12 +288,14 @@ admin('POST', '/api/admin/players', async ({ body }) => {
 
 admin('GET', '/api/admin/players/:id', async ({ params }) => store.playerDetails(Number(params.id), 50));
 
-admin('PATCH', '/api/admin/players/:id', async ({ params, body }) => ({
-  player: await store.updatePlayer(Number(params.id), {
+admin('PATCH', '/api/admin/players/:id', async ({ params, body }) => {
+  const player = await store.updatePlayer(Number(params.id), {
     name: body.name === undefined ? undefined : playerName(body.name),
     active: body.active,
-  }),
-}));
+  });
+  if (!player.active) live.kick(player.id);
+  return { player };
+});
 
 admin('POST', '/api/admin/players/:id/adjust', async ({ params, body }) => {
   const id = Number(params.id);
@@ -296,12 +312,15 @@ admin('POST', '/api/admin/players/:id/adjust', async ({ params, body }) => {
   return store.adjust(id, amount, 'adjust', String(body.note || '').slice(0, 120) || 'Manual adjustment');
 });
 
-admin('POST', '/api/admin/players/:id/regenerate-code', async ({ params }) => ({
-  player: await store.regenerateCode(Number(params.id)),
-}));
+admin('POST', '/api/admin/players/:id/regenerate-code', async ({ params }) => {
+  const player = await store.regenerateCode(Number(params.id));
+  live.kick(player.id);
+  return { player };
+});
 
 admin('DELETE', '/api/admin/players/:id', async ({ params }) => {
   await store.deletePlayer(Number(params.id));
+  live.kick(Number(params.id));
   return { ok: true };
 });
 
@@ -311,6 +330,9 @@ admin('POST', '/api/admin/blackjack', async ({ body }) => {
   const note = String(body.note || '').slice(0, 120) || (amount > 0 ? 'Blackjack win' : amount < 0 ? 'Blackjack loss' : 'Blackjack push');
   return store.adjust(Number(body.playerId), amount, 'blackjack', note);
 });
+
+// Players who currently have the blackjack table screen open.
+admin('GET', '/api/admin/table', async () => ({ seated: live.seated() }));
 
 admin('GET', '/api/admin/activity', async ({ url }) => ({
   entries: await store.activity(url.searchParams.get('type') || 'all', url.searchParams.get('limit'), url.searchParams.get('before')),
@@ -350,7 +372,8 @@ const server = http.createServer(async (req, res) => {
         if (!m) continue;
         const params = Object.fromEntries(r.keys.map((k, i) => [k, m[i + 1]]));
         const body = await readJson(req);
-        const out = await r.handler({ req, url, params, body });
+        const out = await r.handler({ req, res, url, params, body });
+        if (out === STREAMED) return;
         if (out && out.status && out.body !== undefined) return send(res, out.status, out.body, out.headers);
         return send(res, 200, out);
       }

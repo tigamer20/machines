@@ -1,4 +1,4 @@
-import { analyze } from '/shared/paytable.js';
+import { analyze, activeLines, maxLines, LINE_COLORS } from '/shared/paytable.js';
 import { api, esc, fmt, setCurrency, toast, timeAgo, toCents, storage } from '/ui.js';
 
 const root = document.getElementById('app');
@@ -58,10 +58,10 @@ function openSheet(html, { wide = false } = {}) {
   return { el, body: el.querySelector('.sheet-body'), close };
 }
 
-function prow(p, { selected = false } = {}) {
+function prow(p, { selected = false, seated = false } = {}) {
   return `<button type="button" class="prow ${selected ? 'selected' : ''} ${p.active ? '' : 'inactive'}" data-pid="${p.id}">
     <span class="avatar">${esc(initials(p.name))}</span>
-    <span class="pmain"><b>${esc(p.name)}</b><small><span class="code-tag">${esc(p.code)}</span> · ${p.active ? timeAgo(p.last_seen) : 'disabled'}</small></span>
+    <span class="pmain"><b>${seated ? '<span class="seat-dot" title="At the table now"></span>' : ''}${esc(p.name)}</b><small><span class="code-tag">${esc(p.code)}</span> · ${p.active ? timeAgo(p.last_seen) : 'disabled'}</small></span>
     <span class="pright"><b class="num">${fmt(p.balance)}</b><small>${p.spins.toLocaleString('en-US')} spins</small></span>
   </button>`;
 }
@@ -401,11 +401,11 @@ async function openPlayer(id, onChange) {
 
 async function renderBlackjack() {
   const main = layout('blackjack');
-  const st = { players: [], selected: null, result: 'win', amount: '', note: '', search: '' };
+  const st = { players: [], seated: [], selected: null, result: 'win', amount: '', note: '', search: '' };
   const recentIds = () => storage.get('lm_bj_recent', []);
 
   main.innerHTML = `
-    <div class="page-head"><div><h1>Blackjack table</h1><p>Record each hand. The player's balance updates instantly.</p></div></div>
+    <div class="page-head"><div><h1>Blackjack table</h1><p>Record each hand. The player's balance updates instantly, live on their table screen.</p></div></div>
     <div class="grid-2">
       <div class="card card-pad" id="form"></div>
       <div class="card card-pad"><h2>Recent hands</h2><div class="tx-list" id="recent"><div class="loading" style="min-height:120px"><div class="spinner"></div></div></div></div>
@@ -417,6 +417,12 @@ async function renderBlackjack() {
   const loadPlayers = async () => {
     st.players = (await call('/api/admin/players')).players;
     if (st.selected) st.selected = st.players.find((p) => p.id === st.selected.id) || null;
+  };
+  const loadSeated = async () => {
+    const { seated } = await api('/api/admin/table');
+    const changed = seated.join() !== st.seated.join();
+    st.seated = seated;
+    return changed;
   };
   const loadRecent = async () => {
     const { entries } = await call('/api/admin/activity?type=blackjack&limit=25');
@@ -432,30 +438,61 @@ async function renderBlackjack() {
     return st.result === 'win' ? `${name} wins ${fmt(cents)}` : `${name} loses ${fmt(cents)}`;
   };
 
-  const paint = () => {
-    const recent = recentIds()
-      .map((id) => st.players.find((p) => p.id === id))
-      .filter(Boolean);
-    const term = st.search.trim().toLowerCase();
-    const matches = term
-      ? st.players.filter((p) => p.name.toLowerCase().includes(term) || p.code.startsWith(term)).slice(0, 8)
-      : recent.length
-        ? recent
-        : st.players.slice(0, 6);
+  const byId = (id) => st.players.find((p) => p.id === id);
+  const isSeated = (id) => st.seated.includes(id);
 
-    formEl.innerHTML = `
-      <div class="bj-block">
+  const paintPlayers = () => {
+    const block = formEl.querySelector('#pblock');
+    if (!block) return;
+    const term = st.search.trim().toLowerCase();
+    const row = (p) => prow(p, { seated: isSeated(p.id) });
+    let list;
+    if (term) {
+      const matches = st.players.filter((p) => p.name.toLowerCase().includes(term) || p.code.startsWith(term)).slice(0, 8);
+      list = `<div class="sugg-label">Matches</div><div class="suggestions">${matches.map(row).join('') || '<div class="empty">No player found.</div>'}</div>`;
+    } else {
+      const seated = st.seated.map(byId).filter(Boolean);
+      const recent = recentIds()
+        .map(byId)
+        .filter((p) => p && !isSeated(p.id));
+      const others = recent.length || seated.length ? recent : st.players.slice(0, 6);
+      list =
+        (seated.length
+          ? `<div class="sugg-label"><span class="seat-dot"></span>Seated at the table now</div><div class="suggestions">${seated.map(row).join('')}</div>`
+          : `<div class="sugg-label">Nobody has the table screen open. Players can join from the site with the 🃏 Blackjack button.</div>`) +
+        (others.length ? `<div class="sugg-label">${recent.length ? 'Recently at the table' : 'Players'}</div><div class="suggestions">${others.map(row).join('')}</div>` : '');
+    }
+
+    const focused = document.activeElement?.id === 'search';
+    const caret = focused ? document.activeElement.selectionStart : null;
+    block.innerHTML = `
         <div class="step"><i>1</i> Player</div>
         ${
           st.selected
             ? `<div class="selected-player"><span class="avatar">${esc(initials(st.selected.name))}</span>
-                <div class="pmain"><b>${esc(st.selected.name)}</b><div class="muted"><span class="code-tag">${esc(st.selected.code)}</span> · balance <span class="num">${fmt(st.selected.balance)}</span></div></div>
+                <div class="pmain"><b>${isSeated(st.selected.id) ? '<span class="seat-dot"></span>' : ''}${esc(st.selected.name)}</b>
+                  <div class="muted"><span class="code-tag">${esc(st.selected.code)}</span> · balance <span class="num">${fmt(st.selected.balance)}</span>${
+                    isSeated(st.selected.id) ? ' · <span class="pos">watching live</span>' : ''
+                  }</div></div>
                 <button class="btn btn-sm" id="change">Change</button></div>`
-            : `<input class="input" id="search" type="search" placeholder="Name or code" value="${esc(st.search)}" autocomplete="off" />
-               <div class="muted" style="font-size:12px;margin-top:10px">${term ? 'Matches' : recent.length ? 'At the table recently' : 'Players'}</div>
-               <div class="suggestions">${matches.map((p) => prow(p)).join('') || '<div class="empty">No player found.</div>'}</div>`
-        }
-      </div>
+            : `<input class="input" id="search" type="search" placeholder="Search a name or code" value="${esc(st.search)}" autocomplete="off" />${list}`
+        }`;
+    const search = block.querySelector('#search');
+    if (search) {
+      if (focused) {
+        search.focus();
+        search.setSelectionRange(caret, caret);
+      }
+      search.addEventListener('input', () => {
+        st.search = search.value;
+        paintPlayers();
+      });
+    }
+  };
+
+  const paint = () => {
+    formEl.innerHTML = `
+      <div class="bj-block" id="pblock"></div>
       <div class="bj-block">
         <div class="step"><i>2</i> Result</div>
         <div class="segmented">
@@ -476,18 +513,7 @@ async function renderBlackjack() {
       <div class="bj-block">
         <button class="btn btn-primary btn-lg btn-block" id="record">${summary()}</button>
       </div>`;
-
-    const search = formEl.querySelector('#search');
-    if (search) {
-      search.addEventListener('input', () => {
-        st.search = search.value;
-        const pos = search.selectionStart;
-        paint();
-        const s2 = formEl.querySelector('#search');
-        s2.focus();
-        s2.setSelectionRange(pos, pos);
-      });
-    }
+    paintPlayers();
     const amount = formEl.querySelector('#amount');
     amount.addEventListener('input', () => {
       st.amount = amount.value;
@@ -558,8 +584,21 @@ async function renderBlackjack() {
     paint();
   });
 
-  await Promise.all([loadPlayers(), loadRecent()]);
+  await Promise.all([loadPlayers(), loadRecent(), loadSeated().catch(() => {})]);
   paint();
+
+  // Players joining or leaving the table show up within a few seconds.
+  S.timers.push(
+    setInterval(async () => {
+      try {
+        if (!(await loadSeated())) return;
+        if (st.seated.some((id) => !byId(id))) await loadPlayers();
+        paintPlayers();
+      } catch {
+        /* try again on the next tick */
+      }
+    }, 3000)
+  );
 }
 
 // ---------- machines ----------
@@ -632,6 +671,18 @@ async function renderMachineEditor(id) {
             </div>
           </section>
           <section class="card card-pad">
+            <h2>Ways to win</h2>
+            <div class="form-grid">
+              <label class="field"><span>Active pay lines</span><select class="input" data-k="lines" id="linesSel">${linesOptions()}</select></label>
+              <label class="field"><span>Wild symbol</span><select class="input" data-k="wildSymbol" id="wildSym">${roleOptions('wildSymbol')}</select></label>
+              <label class="field"><span>Scatter symbol</span><select class="input" data-k="scatterSymbol" id="scatSym">${roleOptions('scatterSymbol')}</select></label>
+            </div>
+            <div class="mini-lines" id="linesPreview" style="margin-top:14px">${linesPreview()}</div>
+            <p class="hint"><b>Lines:</b> the bet is split across the active lines and each line pays on its own (line payouts multiply the line bet).
+              <b>Wild:</b> replaces any symbol except the jackpot and scatter; its own row pays a line of wilds.
+              <b>Scatter:</b> pays anywhere on screen; its row is the number of reels showing it, times the whole bet.</p>
+          </section>
+          <section class="card card-pad">
             <h2>Jackpot</h2>
             <div class="form-grid">
               <label class="field"><span>Current jackpot (${esc(S.settings.currencySymbol)})</span>
@@ -640,11 +691,11 @@ async function renderMachineEditor(id) {
               <label class="field"><span>% of each bet added to jackpot</span><input class="input num" data-k="jackpotContribution" inputmode="decimal" value="${draft.jackpotContribution}" /></label>
               <label class="field"><span>Jackpot symbol</span><select class="input" data-k="jackpotSymbol" id="jpSym">${jpOptions()}</select></label>
             </div>
-            <p class="hint">The jackpot is won when every reel shows the jackpot symbol on the middle line. Raise that symbol's weight to make it more frequent.</p>
+            <p class="hint">The jackpot is won when any active line is filled with the jackpot symbol (wilds do not count). Raise that symbol's weight or the number of lines to make it more frequent.</p>
           </section>
           <section class="card" style="overflow:hidden">
             <div class="card-pad" style="padding-bottom:6px"><h2>Symbols & payouts</h2>
-              <p class="hint" style="margin-top:-6px">Weight = how often the symbol lands. Payouts are multipliers of the bet for N identical symbols in a row from the left.</p></div>
+              <p class="hint" style="margin-top:-6px">Weight = how often the symbol lands. ×N columns = multiplier of the line bet for N identical symbols in a row from the left (for the scatter: N reels showing it, times the whole bet).</p></div>
             <div style="overflow-x:auto" id="symWrap">${symTable()}</div>
             <div class="card-pad" style="padding-top:10px"><button class="btn btn-sm" id="addSym" ${draft.symbols.length >= 10 ? 'disabled' : ''}>＋ Add symbol</button></div>
           </section>
@@ -655,6 +706,42 @@ async function renderMachineEditor(id) {
     bind();
   };
 
+  function linesOptions() {
+    const max = maxLines(draft.reels);
+    draft.lines = Math.min(Math.max(Number(draft.lines) || 1, 1), max);
+    return Array.from({ length: max }, (_, i) => i + 1)
+      .map((n) => `<option value="${n}" ${n === draft.lines ? 'selected' : ''}>${n} line${n > 1 ? 's' : ''}</option>`)
+      .join('');
+  }
+
+  function roleOptions(key) {
+    const taken = new Set([draft.jackpotSymbol, draft.wildSymbol, draft.scatterSymbol].filter((x, i, arr) => x && x !== draft[key]));
+    return [`<option value="">None</option>`]
+      .concat(
+        draft.symbols
+          .filter((s) => !taken.has(s.s))
+          .map((s) => `<option value="${esc(s.s)}" ${s.s === draft[key] ? 'selected' : ''}>${esc(s.s)} ${esc(s.name)}</option>`)
+      )
+      .join('');
+  }
+
+  function linesPreview() {
+    return activeLines(draft)
+      .map(
+        (p, i) => `<div class="mini-line"><div class="mini-grid" style="--n:${draft.reels}">${[0, 1, 2]
+          .map((row) => p.map((r) => `<i style="${r === row ? `background:${LINE_COLORS[i % LINE_COLORS.length]}` : ''}"></i>`).join(''))
+          .join('')}</div><small>${i + 1}</small></div>`
+      )
+      .join('');
+  }
+
+  function roleBadge(s) {
+    if (s.s === draft.jackpotSymbol) return '<span class="badge warn">Jackpot</span>';
+    if (s.s === draft.wildSymbol) return '<span class="badge on">Wild</span>';
+    if (s.s === draft.scatterSymbol) return '<span class="badge">Scatter</span>';
+    return '';
+  }
+
   function jpOptions() {
     return draft.symbols.map((s) => `<option value="${esc(s.s)}" ${s.s === draft.jackpotSymbol ? 'selected' : ''}>${esc(s.s)} ${esc(s.name)}</option>`).join('');
   }
@@ -663,12 +750,13 @@ async function renderMachineEditor(id) {
     const total = draft.symbols.reduce((t, s) => t + (Number(s.weight) || 0), 0) || 1;
     const counts = Array.from({ length: draft.reels }, (_, i) => i + 1);
     return `<table class="sym-table">
-      <thead><tr><th>Symbol</th><th>Name</th><th>Weight</th><th class="r">Chance</th>${counts.map((k) => `<th>×${k}</th>`).join('')}<th></th></tr></thead>
+      <thead><tr><th>Symbol</th><th>Name</th><th>Role</th><th>Weight</th><th class="r">Chance</th>${counts.map((k) => `<th>×${k}</th>`).join('')}<th></th></tr></thead>
       <tbody>${draft.symbols
         .map(
           (s, i) => `<tr>
         <td><input class="input sym-input" data-sym="${i}" data-f="s" value="${esc(s.s)}" maxlength="16" /></td>
         <td><input class="input name-input" data-sym="${i}" data-f="name" value="${esc(s.name)}" maxlength="24" /></td>
+        <td>${roleBadge(s)}</td>
         <td><input class="input num-input num" data-sym="${i}" data-f="weight" inputmode="numeric" value="${s.weight}" /></td>
         <td class="r num muted">${pct((Number(s.weight) || 0) / total)}</td>
         ${counts
@@ -701,7 +789,8 @@ async function renderMachineEditor(id) {
     el.innerHTML = `
       <h2>Odds</h2>
       <div class="row"><span>Return to player</span><b class="${total > 1 ? 'neg' : ''}">${pct(total)}</b></div>
-      <div class="row"><span class="muted">· from paytable</span><b>${pct(a.rtp)}</b></div>
+      <div class="row"><span class="muted">· ${a.lines} pay line${a.lines > 1 ? 's' : ''}</span><b>${pct(a.lineRtp)}</b></div>
+      ${draft.scatterSymbol ? `<div class="row"><span class="muted">· scatter</span><b>${pct(a.scatterRtp)}</b></div>` : ''}
       <div class="row"><span class="muted">· fed to jackpot</span><b>${pct(contrib)}</b></div>
       <div class="row"><span>Winning spins</span><b>${oneIn(a.hitRate)}</b></div>
       <div class="row"><span>Jackpot</span><b>${oneIn(a.jackpotProb)}</b></div>
@@ -712,6 +801,10 @@ async function renderMachineEditor(id) {
   function refreshSymbols() {
     main.querySelector('#symWrap').innerHTML = symTable();
     main.querySelector('#jpSym').innerHTML = jpOptions();
+    main.querySelector('#wildSym').innerHTML = roleOptions('wildSymbol');
+    main.querySelector('#scatSym').innerHTML = roleOptions('scatterSymbol');
+    main.querySelector('#linesSel').innerHTML = linesOptions();
+    main.querySelector('#linesPreview').innerHTML = linesPreview();
     main.querySelector('#addSym').disabled = draft.symbols.length >= 10;
     paintAnalysis();
   }
@@ -728,6 +821,8 @@ async function renderMachineEditor(id) {
       if (!b) return;
       const [removed] = draft.symbols.splice(Number(b.dataset.remove), 1);
       if (removed.s === draft.jackpotSymbol) draft.jackpotSymbol = draft.symbols[draft.symbols.length - 1].s;
+      if (removed.s === draft.wildSymbol) draft.wildSymbol = '';
+      if (removed.s === draft.scatterSymbol) draft.scatterSymbol = '';
       refreshSymbols();
     });
     main.querySelector('#save').addEventListener('click', save);
@@ -765,9 +860,8 @@ async function renderMachineEditor(id) {
       } else if (f === 'weight') {
         s.weight = Number(t.value);
       } else if (f === 's') {
-        const wasJackpot = s.s === draft.jackpotSymbol;
+        for (const role of ['jackpotSymbol', 'wildSymbol', 'scatterSymbol']) if (draft[role] === s.s) draft[role] = t.value;
         s.s = t.value;
-        if (wasJackpot) draft.jackpotSymbol = t.value;
         if (e.type === 'change') return refreshSymbols();
         main.querySelector('#jpSym').innerHTML = jpOptions();
       } else {
@@ -787,8 +881,11 @@ async function renderMachineEditor(id) {
     else if (k === 'bets') draft.betsText = t.value;
     else if (k === 'jackpotSeed') draft.jackpotSeedText = t.value;
     else if (k === 'jackpotContribution') draft.jackpotContribution = t.value;
-    else if (k === 'jackpotSymbol') {
-      draft.jackpotSymbol = t.value;
+    else if (k === 'jackpotSymbol' || k === 'wildSymbol' || k === 'scatterSymbol') {
+      draft[k] = t.value;
+      return refreshSymbols();
+    } else if (k === 'lines') {
+      draft.lines = Number(t.value);
       return refreshSymbols();
     } else draft[k] = t.value;
     paintAnalysis();
@@ -846,6 +943,7 @@ async function renderSettings() {
           <label class="field"><span>Starting balance (${esc(s.currencySymbol)})</span><input class="input num" name="startingBalance" inputmode="decimal" value="${units(s.startingBalance)}" /></label>
           ${sw('allowSignup', 'Self sign-up', 'Players can create their own code from the home page')}
           ${sw('showLeaderboard', 'Leaderboard', 'Show the top 10 balances to players')}
+          ${sw('blackjackTable', 'Blackjack table', 'Players can open the live blackjack table screen')}
         </div>
       </section>
       <section class="card card-pad">
@@ -869,6 +967,7 @@ async function renderSettings() {
       startingBalance: toCents(f.startingBalance.value),
       allowSignup: f.allowSignup.checked,
       showLeaderboard: f.showLeaderboard.checked,
+      blackjackTable: f.blackjackTable.checked,
       slotsOpen: f.slotsOpen.checked,
       closedMessage: f.closedMessage.value,
       spinDuration: Number(f.spinDuration.value),

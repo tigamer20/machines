@@ -1,4 +1,5 @@
-import { DEFAULT_SETTINGS } from './defaults.js';
+import { DEFAULT_SETTINGS, MACHINE_CONFIG_VERSION } from './defaults.js';
+import { maxLines } from '../shared/paytable.js';
 
 export class HttpError extends Error {
   constructor(status, message) {
@@ -74,6 +75,18 @@ export function validateMachine(input, id) {
 
   const jackpotSymbol = String(input.jackpotSymbol || '');
   if (!seen.has(jackpotSymbol)) bad('The jackpot symbol must be one of the symbols');
+  const optional = (v, label) => {
+    const s = String(v || '');
+    if (s && !seen.has(s)) bad(`The ${label} symbol must be one of the symbols (or none)`);
+    return s;
+  };
+  const wildSymbol = optional(input.wildSymbol, 'wild');
+  const scatterSymbol = optional(input.scatterSymbol, 'scatter');
+  const roles = [jackpotSymbol, wildSymbol, scatterSymbol].filter(Boolean);
+  if (new Set(roles).size !== roles.length) bad('Jackpot, wild and scatter must be different symbols');
+
+  const lines = Math.round(Number(input.lines) || 1);
+  if (lines < 1 || lines > maxLines(reels)) bad(`Lines must be between 1 and ${maxLines(reels)} for ${reels} reels`);
 
   const contribution = Number(input.jackpotContribution);
   if (!Number.isFinite(contribution) || contribution < 0 || contribution > 50) {
@@ -86,9 +99,13 @@ export function validateMachine(input, id) {
     tagline: text(input.tagline, 'Tagline', 80, { required: false }),
     enabled: Boolean(input.enabled),
     reels,
+    lines,
+    version: MACHINE_CONFIG_VERSION,
     theme: { from: theme.from, to: theme.to, accent: theme.accent },
     bets,
     jackpotSymbol,
+    wildSymbol,
+    scatterSymbol,
     jackpotSeed: money(input.jackpotSeed, 'Jackpot seed'),
     jackpotContribution: Math.round(contribution * 100) / 100,
     symbols,

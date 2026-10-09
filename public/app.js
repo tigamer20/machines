@@ -1,4 +1,4 @@
-import { analyze } from '/shared/paytable.js';
+import { analyze, activeLines, LINE_COLORS } from '/shared/paytable.js';
 import { api, esc, fmt, setCurrency, toast, timeAgo, countUp, storage, confetti } from '/ui.js';
 
 const root = document.getElementById('app');
@@ -106,6 +106,7 @@ function shell(active, content) {
   const s = state.config.settings;
   const nav = [
     ['lobby', '#/', '🎰', 'Machines'],
+    ...(s.blackjackTable ? [['table', '#/table', '🃏', 'Blackjack']] : []),
     ['stats', '#/stats', '📊', 'My stats'],
     ...(s.showLeaderboard ? [['leaders', '#/leaders', '🏆', 'Leaders']] : []),
   ];
@@ -296,6 +297,15 @@ function renderLobby() {
     <p class="page-sub">Pick a machine. Every machine has its own progressive jackpot.</p>
     ${s.announcement ? `<div class="notice"><span class="ni">📣</span><div>${esc(s.announcement)}</div></div>` : ''}
     ${!s.slotsOpen ? `<div class="notice warn"><span class="ni">⛔</span><div>${esc(s.closedMessage)}</div></div>` : ''}
+    ${
+      s.blackjackTable
+        ? `<a class="table-card" href="#/table">
+        <span class="tc-icon">🃏</span>
+        <span class="tc-main"><b>Playing at the blackjack table?</b><small>Open your table screen: your balance updates live as the dealer records each hand.</small></span>
+        <span class="btn btn-primary">Join table</span>
+      </a>`
+        : ''
+    }
     <div class="machine-grid">
       ${
         machines.length
@@ -312,7 +322,7 @@ function renderLobby() {
             <small>JACKPOT</small>
             <strong class="num" data-jackpot="${esc(m.id)}">${fmt(m.jackpot)}</strong>
           </div>
-          <div class="mc-meta"><span>${m.reels} reels · ${fmt(m.bets[0])} – ${fmt(m.bets[m.bets.length - 1])}</span><span class="mc-play">Play ▸</span></div>
+          <div class="mc-meta"><span>${m.reels} reels · ${m.lines} line${m.lines > 1 ? 's' : ''} · ${fmt(m.bets[0])}–${fmt(m.bets[m.bets.length - 1])}</span><span class="mc-play">Play ▸</span></div>
         </a>`
               )
               .join('')
@@ -392,9 +402,15 @@ function renderMachine(id) {
           </div>
           <div class="reels" id="reels">
             ${Array.from({ length: m.reels }, () => `<div class="reel"><div class="strip">${[pick(), pick(), pick()].map(cell).join('')}</div></div>`).join('')}
-            <div class="payline" id="payline"></div>
+            <svg class="lines-svg" id="linesSvg" aria-hidden="true"></svg>
           </div>
-          <div class="result-line" id="result"><span class="msg">Line up ${m.reels} × ${esc(m.jackpotSymbol)} to win the jackpot</span></div>
+          <div class="machine-tags">
+            <span class="mtag">${m.lines} line${m.lines > 1 ? 's' : ''}</span>
+            ${m.wildSymbol ? `<span class="mtag">${esc(m.wildSymbol)} wild</span>` : ''}
+            ${m.scatterSymbol ? `<span class="mtag">${esc(m.scatterSymbol)} scatter</span>` : ''}
+            <span class="mtag gold">${esc(m.jackpotSymbol).repeat(m.reels)} jackpot</span>
+          </div>
+          <div class="result-line" id="result"><span class="msg">Tap ℹ️ to see every way to win</span></div>
         </div>
         <div class="controls">
           <div class="bet-row">
@@ -421,7 +437,34 @@ function renderMachine(id) {
   const resultEl = root.querySelector('#result');
   const spinBtn = root.querySelector('#spin');
   const autoBtn = root.querySelector('#auto');
-  const payline = root.querySelector('#payline');
+  const linesSvg = root.querySelector('#linesSvg');
+  const patterns = activeLines(m);
+
+  // Draws the given line indexes over the reels (cell centers + edge stubs).
+  const drawLines = (indexes, { win = false } = {}) => {
+    const cellPx = parseFloat(reelsEl.style.getPropertyValue('--cell')) || 96;
+    const w = reelsEl.clientWidth;
+    const h = reelsEl.clientHeight;
+    const x = (reel) => 10 + reel * (cellPx + 8) + cellPx / 2;
+    const y = (row) => 10 + row * cellPx + cellPx / 2;
+    linesSvg.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    linesSvg.innerHTML = indexes
+      .map((i) => {
+        const p = patterns[i];
+        const pts = [[2, y(p[0])], ...p.map((row, reel) => [x(reel), y(row)]), [w - 2, y(p[p.length - 1])]];
+        const color = LINE_COLORS[i % LINE_COLORS.length];
+        return `<polyline class="${win ? 'win' : ''}" points="${pts.map((q) => q.join(',')).join(' ')}" stroke="${color}" />`;
+      })
+      .join('');
+  };
+  const showAllLines = () => {
+    drawLines(patterns.map((_, i) => i));
+    linesSvg.classList.add('preview');
+    setTimeout(() => {
+      if (!spinning) linesSvg.innerHTML = '';
+      linesSvg.classList.remove('preview');
+    }, 1400);
+  };
 
   const sizeReels = () => {
     const avail = Math.min(reelsEl.parentElement.clientWidth - 32, 688) - 20 - 8 * (m.reels - 1);
@@ -460,7 +503,8 @@ function renderMachine(id) {
     if (sound.on) sound.click();
   });
 
-  root.querySelector('#info').addEventListener('click', () => showPaytable(m));
+  root.querySelector('#info').addEventListener('click', () => showPaytable(m, bet));
+  setTimeout(showAllLines, 350);
 
   const setAuto = (n) => {
     autoLeft = n;
@@ -477,7 +521,7 @@ function renderMachine(id) {
 
   const clearHits = () => {
     reelsEl.querySelectorAll('.hit').forEach((c) => c.classList.remove('hit'));
-    payline.classList.remove('win');
+    linesSvg.innerHTML = '';
   };
 
   async function doSpin() {
@@ -524,19 +568,30 @@ function renderMachine(id) {
     updateJackpots({ [m.id]: r.jackpot });
 
     if (r.win > 0) {
-      const hitCount = r.jackpotWin > 0 ? m.reels : r.count;
-      reels.slice(0, hitCount).forEach((reel) => reel.querySelector('.strip').children[1]?.classList.add('hit'));
-      payline.classList.add('win');
-      const line = r.grid.map((c) => c[1]);
-      resultEl.innerHTML = `<div><div class="win-amt num">WIN ${fmt(r.win)}</div><div class="msg">${
-        r.jackpotWin > 0 ? 'JACKPOT!' : `${r.count} × ${esc(line[0])} pays ${r.mult}×`
-      }</div></div>`;
+      for (const w of r.wins) {
+        for (const [reel, row] of w.cells) reels[reel]?.querySelector('.strip').children[row]?.classList.add('hit');
+      }
+      drawLines(
+        r.wins.filter((w) => w.line !== null).map((w) => w.line),
+        { win: true }
+      );
+      const describe = (w) =>
+        w.type === 'jackpot'
+          ? `JACKPOT on line ${w.line + 1}!`
+          : w.type === 'scatter'
+            ? `${w.count} × ${esc(w.symbol)} scatter · ${fmt(w.amount)}`
+            : `Line ${w.line + 1}: ${w.count} × ${esc(w.symbol)} · ${fmt(w.amount)}`;
+      const shown = [...r.wins].sort((a, b) => b.amount - a.amount);
+      resultEl.innerHTML = `<div><div class="win-amt num">WIN ${fmt(r.win)}</div><div class="msg win-list">${shown
+        .slice(0, 2)
+        .map(describe)
+        .join('<br>')}${shown.length > 2 ? `<br>+ ${shown.length - 2} more` : ''}</div></div>`;
       if (r.jackpotWin > 0) {
         setAuto(0);
         sound.jackpot();
         vibrate([200, 100, 200, 100, 400]);
         await celebrate('JACKPOT', r.jackpotWin, true);
-      } else if (r.mult >= 25) {
+      } else if (r.win >= bet * 15) {
         sound.bigWin();
         vibrate([120, 60, 220]);
         await celebrate('BIG WIN', r.win, false);
@@ -636,31 +691,68 @@ function celebrate(label, amount, wait) {
   });
 }
 
-function showPaytable(m) {
+function showPaytable(m, bet) {
   const a = analyze(m);
-  const rows = [];
+  const patterns = activeLines(m);
+  const lineBet = bet / patterns.length;
+  const symRow = (sym, k, amount, mult) =>
+    `<div class="pt-row"><span class="pt-syms">${Array.from({ length: m.reels }, (_, i) =>
+      i < k ? esc(sym.s) : `<span class="dim">${esc(sym.s)}</span>`
+    ).join('')}</span><span class="pt-pay num">${fmt(amount)}<small>${mult}×</small></span></div>`;
+
+  const lineRows = [];
+  const scatterRows = [];
   for (const sym of [...m.symbols].reverse()) {
     for (let k = m.reels; k >= 1; k--) {
-      const mult = sym.pays?.[k];
+      const mult = Number(sym.pays?.[k]);
       if (!mult) continue;
-      rows.push(`<div class="pt-row"><span class="pt-syms">${Array.from({ length: m.reels }, (_, i) =>
-        i < k ? esc(sym.s) : `<span class="dim">${esc(sym.s)}</span>`
-      ).join('')}</span><span class="pt-pay">${mult}× bet</span></div>`);
+      if (sym.s === m.scatterSymbol) scatterRows.push(symRow(sym, k, Math.floor(mult * bet), mult));
+      else lineRows.push(symRow(sym, k, Math.floor(mult * lineBet), mult));
     }
   }
+
+  const mini = (p, i) => `<div class="mini-line" title="Line ${i + 1}">
+      <div class="mini-grid" style="--n:${m.reels}">${[0, 1, 2]
+        .map((row) => p.map((r) => `<i class="${r === row ? 'on' : ''}" style="${r === row ? `background:${LINE_COLORS[i % LINE_COLORS.length]}` : ''}"></i>`).join(''))
+        .join('')}</div><small>${i + 1}</small></div>`;
+
   const el = document.createElement('div');
   el.className = 'overlay';
   el.innerHTML = `<div class="sheet" role="dialog" aria-label="Paytable">
     <div class="sheet-grip"></div>
-    <div class="sheet-head"><h2>Paytable</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
-    <p class="muted" style="margin-top:0">Wins pay on the middle line, counting identical symbols from the left reel.
-      Faded symbols mean "anything else".</p>
+    <div class="sheet-head"><h2>Ways to win</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+    <p class="muted" style="margin-top:0">Amounts shown for a <b>${fmt(bet)}</b> bet.</p>
+
+    <h3 class="pt-title">🏆 Jackpot</h3>
     <div class="paytable">
-      <div class="pt-row jp"><span class="pt-syms">${esc(m.jackpotSymbol).repeat(m.reels)}</span><span class="pt-pay">JACKPOT</span></div>
-      ${rows.join('')}
+      <div class="pt-row jp"><span class="pt-syms">${esc(m.jackpotSymbol).repeat(m.reels)}</span><span class="pt-pay num">${fmt(m.jackpot)}</span></div>
     </div>
-    <p class="muted" style="font-size:13px;margin-bottom:0">Jackpot odds: about 1 in ${a.jackpotOdds.toLocaleString('en-US')} spins ·
-      ${m.jackpot ? `currently ${fmt(m.jackpot)}` : ''}</p>
+    <p class="pt-note">Fill any active line with ${esc(m.jackpotSymbol)} to win the whole jackpot. About 1 in ${a.jackpotOdds.toLocaleString('en-US')} spins.</p>
+
+    <h3 class="pt-title">📏 ${patterns.length} pay line${patterns.length > 1 ? 's' : ''}</h3>
+    <div class="mini-lines">${patterns.map(mini).join('')}</div>
+    <p class="pt-note">Your bet is split across every line (${fmt(Math.floor(lineBet))} per line). Each line pays on its own when it starts
+      with identical symbols from the left reel. Faded symbols mean "anything else".</p>
+
+    ${
+      m.wildSymbol
+        ? `<h3 class="pt-title">${esc(m.wildSymbol)} Wild</h3>
+           <p class="pt-note">The wild replaces any symbol on a line to complete a win, except ${esc(m.jackpotSymbol)}${
+             m.scatterSymbol ? ` and ${esc(m.scatterSymbol)}` : ''
+           }. A line of wilds pays the most.</p>`
+        : ''
+    }
+    ${
+      m.scatterSymbol && scatterRows.length
+        ? `<h3 class="pt-title">${esc(m.scatterSymbol)} Scatter</h3>
+           <p class="pt-note">Pays anywhere on the screen, no line needed: count the reels showing ${esc(m.scatterSymbol)}.</p>
+           <div class="paytable">${scatterRows.join('')}</div>`
+        : ''
+    }
+
+    <h3 class="pt-title">💰 Line wins</h3>
+    <div class="paytable">${lineRows.join('')}</div>
+    <p class="pt-note" style="margin-bottom:0">About 1 spin in ${(1 / a.hitRate).toFixed(1)} wins something.</p>
   </div>`;
   const close = () => el.remove();
   el.addEventListener('click', (e) => {
@@ -768,6 +860,155 @@ async function renderLeaders() {
   }
 }
 
+// ---------- blackjack table ----------
+
+function renderTable() {
+  const s = state.config.settings;
+  if (!s.blackjackTable) {
+    location.hash = '#/';
+    return;
+  }
+  const session = { net: 0, hands: 0, list: [] };
+
+  root.innerHTML = `
+    <div class="table-view">
+      <div class="tv-top">
+        <button class="btn btn-lg tv-leave" id="leave">← Leave table</button>
+        <span class="live-badge" id="live"><i></i><span>Connecting…</span></span>
+      </div>
+      <div class="tv-center">
+        <div class="tv-label">🃏 Blackjack table</div>
+        <div class="tv-name">${esc(state.player.name)}</div>
+        <div class="tv-caption">Your balance</div>
+        <div class="tv-balance num" id="tvBal">${fmt(state.player.balance)}</div>
+        <div class="tv-flash" id="flash" aria-live="assertive"></div>
+        <div class="tv-session num" id="session">No hand recorded yet</div>
+      </div>
+      <div class="tv-hands" id="hands"></div>
+      <p class="tv-hint">Play at the real table. The dealer records each hand and your balance updates here instantly.</p>
+    </div>`;
+
+  const balEl = root.querySelector('#tvBal');
+  const flashEl = root.querySelector('#flash');
+  const liveEl = root.querySelector('#live');
+  const setLive = (mode, text) => {
+    liveEl.className = `live-badge ${mode}`;
+    liveEl.querySelector('span').textContent = text;
+  };
+
+  const paintSession = () => {
+    root.querySelector('#session').innerHTML = session.hands
+      ? `This session: <b class="${session.net > 0 ? 'pos' : session.net < 0 ? 'neg' : ''}">${fmt(session.net, { sign: true })}</b> · ${session.hands} hand${session.hands > 1 ? 's' : ''}`
+      : 'No hand recorded yet';
+    root.querySelector('#hands').innerHTML = session.list
+      .slice(0, 8)
+      .map(
+        (h) => `<div class="tv-hand ${h.kind}"><span>${h.label}</span><b class="num">${h.kind === 'push' ? 'Push' : fmt(h.amount, { sign: true })}</b></div>`
+      )
+      .join('');
+  };
+
+  let flashTimer;
+  const flash = (kind, text) => {
+    clearTimeout(flashTimer);
+    flashEl.className = 'tv-flash';
+    void flashEl.offsetWidth;
+    flashEl.className = `tv-flash show ${kind}`;
+    flashEl.textContent = text;
+    root.querySelector('.table-view').dataset.result = kind;
+    flashTimer = setTimeout(() => {
+      flashEl.classList.remove('show');
+      delete root.querySelector('.table-view')?.dataset.result;
+    }, 4000);
+  };
+
+  const onBalance = (data) => {
+    const prev = state.player.balance;
+    if (data.balance !== prev) countUp(balEl, prev, data.balance, 900);
+    else balEl.textContent = fmt(data.balance);
+    state.player.balance = data.balance;
+    const c = data.change;
+    if (!c) return;
+    if (c.type === 'blackjack') {
+      const kind = c.amount > 0 ? 'win' : c.amount < 0 ? 'loss' : 'push';
+      session.hands++;
+      session.net += c.amount;
+      session.list.unshift({ kind, amount: c.amount, label: c.note || 'Hand' });
+      if (kind === 'win') {
+        flash('win', `WIN ${fmt(c.amount, { sign: true })}`);
+        sound.win();
+        vibrate([80, 60, 160]);
+      } else if (kind === 'loss') {
+        flash('loss', `LOSS ${fmt(c.amount)}`);
+        sound.error();
+        vibrate(200);
+      } else {
+        flash('push', 'PUSH');
+        sound.click();
+      }
+    } else {
+      session.net += c.type === 'void' ? c.amount : 0;
+      if (c.type === 'void') {
+        session.hands = Math.max(0, session.hands - 1);
+        session.list.unshift({ kind: 'push', amount: c.amount, label: 'Correction by the dealer' });
+      } else {
+        session.list.unshift({ kind: c.amount >= 0 ? 'win' : 'loss', amount: c.amount, label: c.note || 'Adjustment' });
+      }
+      flash(c.amount >= 0 ? 'win' : 'loss', `${c.type === 'void' ? 'CORRECTION' : 'ADJUSTED'} ${fmt(c.amount, { sign: true })}`);
+    }
+    paintSession();
+  };
+
+  const es = new EventSource('/api/live?table=1');
+  es.addEventListener('open', () => setLive('on', 'Live'));
+  es.addEventListener('balance', (e) => onBalance(JSON.parse(e.data)));
+  es.addEventListener('kicked', async () => {
+    es.close();
+    state.player = null;
+    toast('You were signed out by the host', 'error');
+    location.hash = '#/';
+    render();
+  });
+  es.addEventListener('error', async () => {
+    setLive('off', 'Reconnecting…');
+    if (es.readyState === EventSource.CLOSED) {
+      try {
+        await api('/api/me');
+        setTimeout(() => location.hash === '#/table' && render(), 2000);
+      } catch (e) {
+        if (e.status === 401) {
+          state.player = null;
+          render();
+        }
+      }
+    }
+  });
+
+  // Keep the phone screen on while seated.
+  let wakeLock = null;
+  const lock = async () => {
+    try {
+      wakeLock = await navigator.wakeLock?.request('screen');
+    } catch {
+      /* not supported or not allowed */
+    }
+  };
+  const onVisible = () => document.visibilityState === 'visible' && lock();
+  lock();
+  document.addEventListener('visibilitychange', onVisible);
+
+  state.cleanup.push(() => {
+    es.close();
+    clearTimeout(flashTimer);
+    document.removeEventListener('visibilitychange', onVisible);
+    wakeLock?.release?.().catch(() => {});
+  });
+
+  root.querySelector('#leave').addEventListener('click', () => {
+    location.hash = '#/';
+  });
+}
+
 // ---------- router ----------
 
 async function render() {
@@ -777,6 +1018,7 @@ async function render() {
   const [view, arg] = hash.split('/');
   window.scrollTo(0, 0);
   if (view === 'play' && arg) return renderMachine(decodeURIComponent(arg));
+  if (view === 'table') return renderTable();
   if (view === 'stats') return renderStats();
   if (view === 'leaders' && state.config.settings.showLeaderboard) return renderLeaders();
   root.innerHTML = '';
@@ -814,7 +1056,7 @@ document.addEventListener('visibilitychange', async () => {
     setCurrency(config.settings.currencySymbol);
     state.machines = new Map(config.machines.map((m) => [m.id, m]));
     setBalance(me.player.balance);
-    if (changed && !location.hash.startsWith('#/play')) render();
+    if (changed && !/^#\/(play|table)/.test(location.hash)) render();
   } catch (e) {
     if (e.status === 401) {
       state.player = null;
