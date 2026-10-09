@@ -168,7 +168,7 @@ Winning lines are drawn over the reels, and the **ℹ️** button on each machin
 
 All randomness happens on the server with a cryptographically secure generator. The browser only animates the result, so players cannot cheat.
 
-The defaults pay back about **91–92%** of bets on average (93–96% counting what feeds the jackpot). (verified with 200,000 simulated spins per machine):
+The defaults pay back about **91–92%** of bets on average (93–96% counting what feeds the jackpot), verified with 200,000 simulated spins per machine:
 
 | Machine | Reels / lines | Wild · Scatter | Bets | Jackpot starts at | Jackpot odds |
 | --- | --- | --- | --- | --- | --- |
