@@ -135,9 +135,26 @@ class LocalDb {
   }
 }
 
+// Catches the most common setup mistakes before the first query.
+function checkTursoEnv(url, token) {
+  const u = url.trim();
+  if (!/^(libsql|https?):\/\//.test(u)) {
+    throw new Error('TURSO_DATABASE_URL must start with libsql:// (copy the URL from the Turso dashboard)');
+  }
+  const t = (token || '').trim().replace(/^Bearer\s+/i, '');
+  if (!t) throw new Error('TURSO_AUTH_TOKEN is empty. Create a token in the Turso dashboard and set it.');
+  if (t.includes('://') || t.startsWith('libsql')) {
+    throw new Error('TURSO_AUTH_TOKEN contains a URL. Put the database URL in TURSO_DATABASE_URL and the token (starts with "eyJ") in TURSO_AUTH_TOKEN.');
+  }
+  if (t.split('.').length !== 3) {
+    throw new Error('TURSO_AUTH_TOKEN does not look like a Turso token (it should start with "eyJ" and contain two dots). Copy it again without spaces or quotes.');
+  }
+  return t;
+}
+
 export async function openDb() {
   const url = process.env.TURSO_DATABASE_URL;
-  if (url) return new TursoDb(url, process.env.TURSO_AUTH_TOKEN);
+  if (url) return new TursoDb(url, checkTursoEnv(url, process.env.TURSO_AUTH_TOKEN));
   const { DatabaseSync } = await import('node:sqlite');
   const file = process.env.LOCAL_DB_FILE || path.resolve('data', 'local.db');
   console.warn(`[db] TURSO_DATABASE_URL is not set, using local SQLite file ${file}`);
